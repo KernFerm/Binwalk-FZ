@@ -1,0 +1,189 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "bw_engine.h"
+#include "bw_external_protocol.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CHECK(x) do { if(!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return false; } } while(0)
+
+typedef struct {
+    const uint8_t* data;
+    uint64_t size;
+    size_t max_read;
+    uint32_t calls;
+    bool fail;
+} Memory;
+
+static bool memory_read(void* context, uint64_t offset, uint8_t* data, size_t length, size_t* actual) {
+    Memory* memory = context;
+    memory->calls++;
+    if(length > memory->max_read) memory->max_read = length;
+    if(memory->fail || offset > memory->size || length > memory->size - offset) { *actual = 0; return false; }
+    memcpy(data, memory->data + (size_t)offset, length); *actual = length; return true;
+}
+
+static BwReader reader_for(Memory* memory) {
+    BwReader reader = {.context = memory, .size = memory->size, .read_at = memory_read}; return reader;
+}
+
+static uint32_t test_crc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFFU;
+    for(size_t i=0;i<length;i++) { crc ^= data[i]; for(int bit=0;bit<8;bit++) crc=(crc>>1)^(0xEDB88320U&(0U-(crc&1U))); }
+    return ~crc;
+}
+
+static void put_le32(uint8_t* p, uint32_t value) { p[0]=(uint8_t)value; p[1]=(uint8_t)(value>>8); p[2]=(uint8_t)(value>>16); p[3]=(uint8_t)(value>>24); }
+static void put_be32(uint8_t* p, uint32_t value) { p[0]=(uint8_t)(value>>24); p[1]=(uint8_t)(value>>16); p[2]=(uint8_t)(value>>8); p[3]=(uint8_t)value; }
+
+static bool scan_one(uint8_t* data, size_t size, BwType expected, uint64_t offset) {
+    Memory memory={.data=data,.size=size}; BwReader reader=reader_for(&memory); BwScanResult result;
+    CHECK(bw_scan(&reader,&result,NULL,NULL,NULL)); CHECK(!result.io_error); CHECK(result.count==1); CHECK(result.detections[0].type==expected); CHECK(result.detections[0].offset==offset); return true;
+}
+
+static bool test_priority_signatures(void) {
+    uint8_t data[1024];
+    memset(data,0,sizeof(data)); memcpy(data,"\x7f" "ELF",4); data[4]=1; data[5]=1; data[6]=1; data[18]=3; CHECK(scan_one(data,20,BwTypeElf,0));
+    memset(data,0,sizeof(data)); memcpy(data,"MZ",2); put_le32(data+0x3c,64); memcpy(data+64,"PE\0\0",4); data[68]=0x4c; data[69]=1; data[70]=1; data[84]=0xE0; CHECK(scan_one(data,88,BwTypePe,0));
+    memset(data,0,sizeof(data)); memcpy(data,"PK\x03\x04",4); data[4]=20; CHECK(scan_one(data,30,BwTypeZip,0));
+    memset(data,0,sizeof(data)); memcpy(data,"\x1f\x8b\x08",3); data[9]=3; CHECK(scan_one(data,10,BwTypeGzip,0));
+    memset(data,0,sizeof(data)); memcpy(data,"7z\xbc\xaf\x27\x1c",6); put_le32(data+8,test_crc32(data+12,20)); put_le32(data+28,test_crc32(data+32,0)); CHECK(scan_one(data,32,BwType7zip,0));
+    memset(data,0,sizeof(data)); memcpy(data,"Rar!\x1a\x07\0",7); data[9]=0x73; data[12]=7; CHECK(scan_one(data,14,BwTypeRar,0));
+    memset(data,0,sizeof(data)); memcpy(data,"Rar!\x1a\x07\x01\0",8); CHECK(scan_one(data,8,BwTypeRar,0));
+    memset(data,0,sizeof(data)); memcpy(data,"\x89PNG\r\n\x1a\n",8); put_be32(data+8,13); memcpy(data+12,"IHDR",4); put_be32(data+16,2); put_be32(data+20,3); data[24]=8; data[25]=2; put_be32(data+29,test_crc32(data+12,17)); CHECK(scan_one(data,33,BwTypePng,0));
+    memset(data,0,sizeof(data)); memcpy(data,"\xff\xd8\xff\xe0\0\x10JFIF\0",11); CHECK(scan_one(data,20,BwTypeJpeg,0));
+    memset(data,0,sizeof(data)); memcpy(data,"GIF89a",6); data[6]=2; data[8]=3; data[10]=0x70; CHECK(scan_one(data,13,BwTypeGif,0));
+    memset(data,0,sizeof(data)); memcpy(data,"%PDF-1.7\n",9); CHECK(scan_one(data,9,BwTypePdf,0));
+    memset(data,0,sizeof(data)); memcpy(data,"%PDF-2.0\n",9); CHECK(scan_one(data,9,BwTypePdf,0));
+    memset(data,0,sizeof(data)); memcpy(data,"SQLite format 3\0",16); data[16]=0x10; data[18]=1; data[19]=1; data[21]=64; data[22]=32; data[23]=32; CHECK(scan_one(data,100,BwTypeSqlite,0));
+    memset(data,0,sizeof(data)); memcpy(data,"RIFF",4); put_le32(data+4,36); memcpy(data+8,"WAVEfmt ",8); put_le32(data+16,16); data[20]=1; data[22]=1; put_le32(data+24,8000); data[34]=8; CHECK(scan_one(data,44,BwTypeWav,0));
+    return true;
+}
+
+static bool test_boundary_offset_and_false_positive(void) {
+    uint8_t data[700]; memset(data,0xA5,sizeof(data)); size_t o=507;
+    memcpy(data+o,"\x89PNG\r\n\x1a\n",8); put_be32(data+o+8,13); memcpy(data+o+12,"IHDR",4); put_be32(data+o+16,10); put_be32(data+o+20,20); data[o+24]=8; data[o+25]=2; data[o+26]=0; data[o+27]=0; data[o+28]=0; put_be32(data+o+29,test_crc32(data+o+12,17)); CHECK(scan_one(data,sizeof(data),BwTypePng,o));
+    memset(data,0,sizeof(data)); memcpy(data,"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",16); Memory m={.data=data,.size=33}; BwReader r=reader_for(&m); BwScanResult result; CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0); return true;
+}
+
+static bool test_additional_signatures(void) {
+    uint8_t data[1024];
+    memset(data,0,sizeof(data)); memcpy(data,"BM",2); put_le32(data+2,58); put_le32(data+10,54); put_le32(data+14,40); CHECK(scan_one(data,58,BwTypeBmp,0));
+    memset(data,0,sizeof(data)); memcpy(data,"BZh91AY&SY",10); CHECK(scan_one(data,10,BwTypeBzip2,0));
+    memset(data,0,sizeof(data)); memcpy(data,"\xfd" "7zXZ\0",6); put_le32(data+8,test_crc32(data+6,2)); CHECK(scan_one(data,12,BwTypeXz,0));
+    memset(data,0,sizeof(data)); memcpy(data,"\x28\xb5\x2f\xfd\0\0",6); CHECK(scan_one(data,6,BwTypeZstd,0));
+    memset(data,0,sizeof(data)); memcpy(data,"fLaC",4); data[7]=34; CHECK(scan_one(data,42,BwTypeFlac,0));
+    memset(data,0,sizeof(data)); memcpy(data,"sample.bin",10); memset(data+148,' ',8); memcpy(data+257,"ustar",5);
+    uint32_t sum=0; for(size_t i=0;i<512;i++) sum+=data[i];
+    char checksum[8]; snprintf(checksum,sizeof(checksum),"%06o",sum); memcpy(data+148,checksum,6); data[154]=0; data[155]=' ';
+    CHECK(scan_one(data,512,BwTypeTar,0));
+    return true;
+}
+
+static bool test_truncated_and_corrupt(void) {
+    uint8_t data[64]={0}; memcpy(data,"\x7f" "EL",3); Memory m={.data=data,.size=3}; BwReader r=reader_for(&m); BwScanResult result; CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0);
+    memset(data,0,sizeof(data)); memcpy(data,"MZ",2); put_le32(data+0x3c,0xFFFFFFF0U); m.data=data; m.size=sizeof(data); r=reader_for(&m); CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0);
+    memset(data,0,sizeof(data)); memcpy(data,"%PDF-1.X\n",9); m.data=data; m.size=9; r=reader_for(&m); CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0);
+    memset(data,0,sizeof(data)); memcpy(data,"Rar!\x1a\x07\0",7); data[9]=0x73; data[12]=0xFF; data[13]=0x7F; m.data=data; m.size=14; r=reader_for(&m); CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0);
+    memset(data,0,sizeof(data)); memcpy(data,"%PDF-3.0\n",9); m.data=data; m.size=9; r=reader_for(&m); CHECK(bw_scan(&r,&result,NULL,NULL,NULL)); CHECK(result.count==0);
+    return true;
+}
+
+static bool test_strings(void) {
+    uint8_t data[530]; memset(data,0,sizeof(data)); memcpy(data+509,"BOUNDARY-STRING",15); memcpy(data+100,"short",5);
+    Memory m={.data=data,.size=sizeof(data)}; BwReader r=reader_for(&m); BwStringsResult result; CHECK(bw_strings(&r,8,&result,NULL,NULL,NULL)); CHECK(result.total==1); CHECK(result.strings[0].offset==509); CHECK(result.strings[0].length==15); CHECK(!strcmp(result.strings[0].text,"BOUNDARY-STRING")); return true;
+}
+
+static bool test_entropy(void) {
+    uint8_t zero[512]={0}; Memory m={.data=zero,.size=sizeof(zero)}; BwReader r=reader_for(&m); BwEntropyResult result; CHECK(bw_entropy(&r,256,&result,NULL,NULL,NULL)); CHECK(fabs(result.whole)<0.000001); CHECK(result.block_count==2);
+    uint8_t uniform[256]; for(size_t i=0;i<256;i++) uniform[i]=(uint8_t)i; m.data=uniform; m.size=sizeof(uniform); r=reader_for(&m); CHECK(bw_entropy(&r,256,&result,NULL,NULL,NULL)); CHECK(fabs(result.whole-8.0)<0.000001); return true;
+}
+
+static bool test_search_boundary(void) {
+    uint8_t data[700]={0}; memcpy(data+510,"needle",6); Memory m={.data=data,.size=sizeof(data)}; BwReader r=reader_for(&m); BwSearchResult result; CHECK(bw_search(&r,(const uint8_t*)"needle",6,&result,NULL,NULL,NULL)); CHECK(result.total==1); CHECK(result.offsets[0]==510); return true;
+}
+
+static bool cancel_now(void* context) { (void)context; return true; }
+
+static bool test_zero_cancel_io_and_large(void) {
+    uint8_t byte=0; Memory m={.data=&byte,.size=0}; BwReader r=reader_for(&m); BwScanResult scan; CHECK(bw_scan(&r,&scan,NULL,NULL,NULL)); CHECK(scan.count==0);
+    m.size=1; r=reader_for(&m); CHECK(!bw_scan(&r,&scan,cancel_now,NULL,NULL)); CHECK(scan.cancelled);
+    m.fail=true; r=reader_for(&m); CHECK(!bw_scan(&r,&scan,NULL,NULL,NULL)); CHECK(scan.io_error);
+    size_t size=2U*1024U*1024U; uint8_t* large=calloc(1,size); CHECK(large); m.data=large; m.size=size; m.fail=false; m.max_read=0; r=reader_for(&m); CHECK(bw_scan(&r,&scan,NULL,NULL,NULL)); CHECK(scan.count==0); CHECK(m.max_read<=BW_IO_CHUNK); free(large); return true;
+}
+
+static bool test_deterministic_stress(void) {
+    uint8_t data[1024];
+    uint32_t state = 0xC001D00DU;
+    for(size_t round = 0; round < 1000; round++) {
+        size_t size = round % (sizeof(data) + 1U);
+        for(size_t i = 0; i < size; i++) {
+            state = state * 1664525U + 1013904223U;
+            data[i] = (uint8_t)(state >> 24);
+        }
+        Memory memory = {.data = data, .size = size};
+        BwReader reader = reader_for(&memory);
+        BwScanResult scan;
+        CHECK(bw_scan(&reader, &scan, NULL, NULL, NULL));
+        CHECK(scan.count <= BW_MAX_DETECTIONS);
+        CHECK(memory.max_read <= BW_IO_CHUNK);
+    }
+    return true;
+}
+
+typedef struct {
+    uint32_t count;
+    BwExternalMessage last;
+} ExternalSink;
+
+static void receive_external(const BwExternalMessage* message, void* context) {
+    ExternalSink* sink = context;
+    sink->count++;
+    sink->last = *message;
+}
+
+static bool test_external_protocol(void) {
+    BwExternalMessage message;
+    CHECK(bw_external_parse_line(
+        "BWF1 INFO 1 1.0.0 3.1.1 4 2 65536 firmware.bin",
+        &message));
+    CHECK(message.type == BwExternalMessageInfo);
+    CHECK(message.file_count == 4 && message.file_index == 2 && message.file_size == 65536);
+    CHECK(!strcmp(message.file_name, "firmware.bin"));
+    CHECK(bw_external_parse_line(
+        "BWF1 STATUS DONE 7 507 1024 250 png PNG_image END",
+        &message));
+    CHECK(message.type == BwExternalMessageStatus);
+    CHECK(message.detections == 7 && message.first_offset == 507);
+    CHECK(!strcmp(message.result_name, "png"));
+    CHECK(!bw_external_parse_line(
+        "BWF1 INFO 1 1.0.0 3.1.1 2 2 4 invalid.bin",
+        &message));
+    CHECK(!bw_external_parse_line(
+        "BWF1 STATUS DONE 1 18446744073709551616 0 0 x y END",
+        &message));
+
+    BwExternalDecoder decoder;
+    bw_external_decoder_reset(&decoder);
+    ExternalSink sink = {0};
+    const uint8_t part1[] = "BWF1 STATUS DONE 1 507 ";
+    const uint8_t part2[] = "1024 250 png PNG_image END\r\n";
+    bw_external_decoder_feed(&decoder, part1, sizeof(part1) - 1, receive_external, &sink);
+    CHECK(sink.count == 0);
+    bw_external_decoder_feed(&decoder, part2, sizeof(part2) - 1, receive_external, &sink);
+    CHECK(sink.count == 1 && sink.last.first_offset == 507);
+
+    uint8_t oversized[BW_EXTERNAL_LINE_MAX + 8];
+    memset(oversized, 'A', sizeof(oversized));
+    oversized[sizeof(oversized) - 1] = '\n';
+    bw_external_decoder_feed(&decoder, oversized, sizeof(oversized), receive_external, &sink);
+    CHECK(sink.count == 1);
+    return true;
+}
+
+int main(void) {
+    CHECK(test_priority_signatures()); CHECK(test_boundary_offset_and_false_positive()); CHECK(test_additional_signatures()); CHECK(test_truncated_and_corrupt()); CHECK(test_strings()); CHECK(test_entropy()); CHECK(test_search_boundary()); CHECK(test_zero_cancel_io_and_large()); CHECK(test_deterministic_stress()); CHECK(test_external_protocol());
+    puts("All Binwalk-FZ engine tests passed."); return 0;
+}

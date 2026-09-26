@@ -1,0 +1,16 @@
+Binwalk FZ
+==========
+
+This application is an independently adapted, bounded Flipper Zero port of
+selected analysis behavior and signature semantics from Binwalk v3.
+
+Binwalk FZ is free software licensed under the GNU General Public License,
+version 3 or (at your option) any later version. See LICENSE for the full
+license terms.
+
+Upstream Binwalk is Copyright (c) 2024 devttys0 and is distributed under the
+MIT License. The upstream repository is not vendored into the FAP. See
+UPSTREAM_VERSION.md for the exact analyzed revision.
+
+Binwalk FZ is not endorsed by ReFirmLabs, the upstream Binwalk maintainers, or
+Flipper Devices. It does not execute or extract detected content.

@@ -1,0 +1,13 @@
+App(
+    appid="binwalk_fz",
+    name="Binwalk FZ",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="binwalk_fz_app",
+    sources=["*.c"],
+    requires=["gui", "storage"],
+    stack_size=4096,
+    fap_category="Tools",
+    fap_description="Native and external genuine Binwalk analysis",
+    fap_author="Binwalk contributors; Flipper port contributors",
+    fap_version="1.0.0",
+)

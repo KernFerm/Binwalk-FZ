@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=Binwalk FZ UART bridge
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/binwalk-fz/venv/bin/python /opt/binwalk-fz/binwalk_fz_bridge.py --serial /dev/serial0 --baud 115200
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/binwalk-fz
+
+[Install]
+WantedBy=multi-user.target
