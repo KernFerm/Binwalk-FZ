@@ -22,7 +22,7 @@
 #define BW_DATA_DIR APP_DATA_PATH("")
 #define BW_REPORT_PATH APP_DATA_PATH("report.txt")
 #define BW_HEX_BYTES 24U
-#define BW_APP_VERSION "1.0.0"
+#define BW_APP_VERSION "1.0.1"
 
 typedef enum {
     BwViewMain,

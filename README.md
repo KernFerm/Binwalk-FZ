@@ -1,64 +1,99 @@
 # Binwalk FZ
 
-Binwalk FZ is a read-only Flipper Zero application for streaming binary signature analysis. It scans arbitrary files without loading them into RAM and reports only structurally validated detections at their real byte offsets. Version 1.0.0 also supports a Raspberry Pi/Linux companion running the genuine upstream Binwalk executable.
+Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports only structurally validated signatures at their real byte offsets. Version 1.0.1 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
 
-Current release: **v1.0.0**.
+Current release: **v1.0.1**.
 
 ## Install the FAP
 
-The supplied build targets official Flipper firmware 1.4.3, target f7, API 87.1. Copy `dist/binwalk_fz.fap` to `/ext/apps/Tools/` with qFlipper's microSD file browser, or place the microSD card in a computer and copy the FAP to `apps/Tools/`. On the device, open **Apps → Tools → Binwalk FZ**.
+You need a Flipper Zero with a working microSD card. The supplied release build targets official firmware 1.4.3, target f7, API 87.1. A firmware build with an incompatible API may require the app to be rebuilt.
 
-An incompatible firmware API may require rebuilding the FAP.
+### Install with qFlipper
 
-## Use
+1. Download `binwalk_fz.fap` from the latest GitHub release or from this repository's `dist` folder.
+2. Connect the Flipper Zero by USB and open qFlipper.
+3. Open the microSD card file browser.
+4. Open `apps`, then `Tools`.
+5. Copy `binwalk_fz.fap` into `/ext/apps/Tools/`.
+6. Safely disconnect the device.
+7. On the Flipper, open **Apps → Tools → Binwalk FZ**.
 
-1. Choose **Select File** and select any file on the microSD card. Extensions do not affect analysis.
-2. Choose **Scan Signatures**. The scan runs in a worker and shows real byte progress. Back requests cancellation.
-3. Open **Results** and select a detection to view its actual offset, matched signature bytes, description, known size, and parsed metadata.
-4. Use **HEX Viewer** for real bytes and ASCII. Up/Down move 24 bytes, Left/Right move four bytes, and OK opens hexadecimal goto.
-5. Use **Strings** for printable ASCII runs, **Entropy** for whole-file and per-block Shannon entropy, or **Search** for a case-sensitive ASCII byte sequence.
-6. Choose **Reports** to write completed results to `/ext/apps_data/binwalk_fz/report.txt`.
-7. Use **Settings** to select a string minimum of 4/6/8/12 bytes and an entropy block size of 256/512/1024/2048 bytes. Settings also shows **Version**; select **About** and press OK for app, operating-mode, results-policy, and license information.
+The filename ends in `.fap` (Flipper Application Package), not `.fab`.
 
-## External Binwalk on Raspberry Pi/Linux
+### Install directly from a microSD card
 
-The external mode runs genuine upstream Binwalk on a Raspberry Pi or Linux computer. Files stay on the Pi; the Flipper selects an input, starts or cancels a scan, and displays the real upstream result count and first detection returned through Binwalk's JSON output.
+Put the microSD card in a computer, copy `binwalk_fz.fap` to `apps/Tools/`, safely eject the card, and return it to the Flipper Zero. The app then appears under **Apps → Tools**.
 
-1. Install and start the companion by following [EXTERNAL_BINWALK.md](EXTERNAL_BINWALK.md).
-2. Put files to analyze in `/var/lib/binwalk-fz/input` on the Pi.
-3. Connect crossed 3.3 V UART TX/RX and common ground.
-4. Open **External Binwalk** on the Flipper.
-5. Use Left/Right to choose a Pi input and OK to start or cancel its scan.
+## Use the application
 
-The fixed BWF1 protocol does not provide arbitrary command execution. Full extraction, recursion, filters, carving, and other upstream CLI options remain available directly on the Pi.
+### Native signature analysis
 
-Supported validated types are ELF, PE, ZIP, GZIP, 7-Zip, RAR, PNG, JPEG, GIF, PDF, SQLite, WAV, BMP, BZIP2, XZ, Zstandard, FLAC, and TAR. See [SIGNATURE_COMPATIBILITY.md](SIGNATURE_COMPATIBILITY.md) for exact validators.
+1. Copy a firmware image or other binary file anywhere on the Flipper's microSD card.
+2. Open **Select File** and choose the file. The filename and extension do not determine the result.
+3. Open **Scan Signatures**. The worker displays real byte progress; press **Back** to request safe cancellation.
+4. Open **Results** and select a detection to view its actual hexadecimal and decimal offset, matched signature bytes, description, known size, and parsed metadata.
 
-## Important boundaries
+The native scanner recognizes validated ELF, PE, ZIP, GZIP, 7-Zip, RAR, PNG, JPEG, GIF, PDF, SQLite, WAV, BMP, BZIP2, XZ, Zstandard, FLAC, and TAR structures. A byte pattern that fails its structural checks is not reported. See [SIGNATURE_COMPATIBILITY.md](SIGNATURE_COMPATIBILITY.md) for the exact validators.
 
-The native Flipper engine does not extract, decompress, execute, mount, or recursively process detected content. It implements 18 bounded types, not upstream Binwalk's entire signature catalog. The external mode uses upstream Binwalk's genuine catalog on the Pi but leaves extraction and other advanced operations at the Pi command line. `.nfc`, `.rfid`, `.sub`, UART captures, and firmware files are treated as arbitrary bytes unless their contents pass a real validator. No result is invented from a filename or extension.
+### HEX viewer, strings, entropy, and search
 
-Retained results are bounded to 64 detections, strings, search hits, and entropy blocks; totals and truncation are stated. Device files above 4 GiB are rejected because firmware 1.4.3 exposes a 32-bit seek API.
+- **HEX Viewer** displays real file bytes and ASCII. Up/Down moves 24 bytes, Left/Right moves four bytes, and OK opens hexadecimal goto.
+- **Strings** finds real printable ASCII runs using the minimum length selected in Settings.
+- **Entropy** calculates whole-file and per-block Shannon entropy using the selected block size.
+- **Search** finds a case-sensitive ASCII byte sequence and reports its real offsets.
+
+Files are streamed in bounded chunks instead of being loaded completely into Flipper RAM.
+
+### Reports and settings
+
+- **Reports** writes completed measured/parser results to `/ext/apps_data/binwalk_fz/report.txt`.
+- **Settings** selects a string minimum of 4/6/8/12 bytes and an entropy block size of 256/512/1024/2048 bytes.
+- **Version** displays the installed application version.
+- Select **About** and press OK for an on-device description of native and Raspberry Pi operation. Use Up/Down to scroll.
+
+Cancelled, failed, or rejected operations do not create a partial analysis result.
+
+### External Binwalk on Raspberry Pi/Linux
+
+This mode runs the genuine upstream `binwalk` executable on a Raspberry Pi or Linux computer. It does not imitate signatures or generate placeholder results. Install and configure the companion first by following [EXTERNAL_BINWALK.md](EXTERNAL_BINWALK.md).
+
+1. Install genuine upstream Binwalk and the Binwalk-FZ companion on the Pi/Linux computer.
+2. Put files to analyze in `/var/lib/binwalk-fz/input` on the companion computer.
+3. Connect crossed **3.3 V UART** TX/RX and a common ground between the Pi and Flipper. Do not connect 5 V signaling to Flipper GPIO.
+4. In the Flipper's **Settings**, select the UART baud used by the companion.
+5. Open **External Binwalk**. The screen reports the genuine Binwalk version and real files offered by the Pi.
+6. Use Left/Right to select a file and OK to start or cancel its scan.
+7. The Pi runs Binwalk and the Flipper displays the genuine detection count and first-result details returned from Binwalk's JSON output.
+8. Press **Back** to stop the external session, close UART, and restore the Flipper expansion service.
+
+Files remain on the Pi. Full extraction, recursion, filters, carving, and other upstream command-line features remain available directly on the Pi. The fixed BWF1 protocol does not expose arbitrary shell commands.
+
+## What the app does not do
+
+The native Flipper engine does not extract, decompress, execute, mount, or recursively process detected content. It implements 18 bounded validated types rather than the entire upstream Binwalk signature catalog. External mode provides the genuine upstream catalog on the Pi, but advanced extraction and CLI features are operated directly on the Pi.
+
+`.nfc`, `.rfid`, `.sub`, UART captures, and firmware files are treated as arbitrary bytes unless their contents pass a real validator. No result is invented from a filename or extension. Retained detections, strings, search hits, and entropy blocks are bounded to 64 entries, with totals and truncation shown. Device files above 4 GiB are rejected because firmware 1.4.3 exposes a 32-bit seek API.
+
+Only inspect firmware and files that you own or are authorized to analyze. See [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [SECURITY.md](SECURITY.md), and [TESTING.md](TESTING.md) for exact support, resource limits, and validation evidence.
 
 ## Build from source
 
-Requirements are Python 3, uFBT, and the official release SDK:
+Requirements: Python 3, `ufbt` 0.2.6 or newer, and official firmware/SDK 1.4.3 (API 87.1) or a compatible SDK.
 
 ```powershell
 python -m pip install --upgrade ufbt
 python -m ufbt update --channel release
 python tests/run_tests.py
+python tests/test_companion.py
 python -m ufbt
 ```
 
-For a full firmware checkout, place the project at `applications_user/binwalk_fz` and run:
+The build creates `dist/binwalk_fz.fap`. To build inside a full official firmware checkout, place the project at `applications_user/binwalk_fz` and run:
 
 ```sh
 ./fbt fap_binwalk_fz
 ```
 
-See [PORTING_ANALYSIS.md](PORTING_ANALYSIS.md), [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [SECURITY.md](SECURITY.md), and [TESTING.md](TESTING.md) for the architecture, limits, and evidence.
-
 ## License
 
-Binwalk-FZ is licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). Upstream Binwalk remains MIT-licensed. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [UPSTREAM_VERSION.md](UPSTREAM_VERSION.md).
+This repository is free software distributed under the **GNU General Public License, version 3 or later (`GPL-3.0-or-later`)**. Upstream Binwalk remains MIT-licensed and retains its attribution. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [UPSTREAM_VERSION.md](UPSTREAM_VERSION.md).

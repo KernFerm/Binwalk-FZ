@@ -147,7 +147,7 @@ static void receive_external(const BwExternalMessage* message, void* context) {
 static bool test_external_protocol(void) {
     BwExternalMessage message;
     CHECK(bw_external_parse_line(
-        "BWF1 INFO 1 1.0.0 3.1.1 4 2 65536 firmware.bin",
+        "BWF1 INFO 1 1.0.1 3.1.1 4 2 65536 firmware.bin",
         &message));
     CHECK(message.type == BwExternalMessageInfo);
     CHECK(message.file_count == 4 && message.file_index == 2 && message.file_size == 65536);
@@ -159,7 +159,7 @@ static bool test_external_protocol(void) {
     CHECK(message.detections == 7 && message.first_offset == 507);
     CHECK(!strcmp(message.result_name, "png"));
     CHECK(!bw_external_parse_line(
-        "BWF1 INFO 1 1.0.0 3.1.1 2 2 4 invalid.bin",
+        "BWF1 INFO 1 1.0.1 3.1.1 2 2 4 invalid.bin",
         &message));
     CHECK(!bw_external_parse_line(
         "BWF1 STATUS DONE 1 18446744073709551616 0 0 x y END",
