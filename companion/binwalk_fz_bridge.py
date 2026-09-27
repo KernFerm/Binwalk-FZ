@@ -9,13 +9,14 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import serial
 
-BRIDGE_VERSION = "1.0.1"
+BRIDGE_VERSION = "1.0.2"
 PROTOCOL_VERSION = 1
 MAX_LINE = 256
 MAX_JSON = 32 * 1024 * 1024
@@ -26,6 +27,11 @@ SERIAL_RE = re.compile(r"/dev/(serial[0-9]+|tty(?:AMA|USB|ACM|S)[0-9]+)\Z")
 def token(value: object, limit: int) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_./:+-]", "_", str(value))
     return (cleaned or "-")[:limit]
+
+
+def os_error_token(prefix: str, error: OSError) -> str:
+    detail = error.strerror or str(error) or error.__class__.__name__
+    return token(f"{prefix}_{detail}", 63)
 
 
 class Bridge:
@@ -49,7 +55,11 @@ class Bridge:
         self.worker: threading.Thread | None = None
         self.lock = threading.Lock()
         self.cancel_requested = False
-        self.refresh()
+        self.error = "-"
+        refresh_error = self.refresh()
+        if refresh_error:
+            self.state = "ERROR"
+            self.error = refresh_error
 
     def _version(self) -> str:
         if not self.binwalk:
@@ -68,26 +78,41 @@ class Bridge:
         match = re.search(r"([0-9]+\.[0-9]+(?:\.[0-9]+)?)", result.stdout)
         return match.group(1) if match else "unknown"
 
-    def refresh(self) -> None:
-        self.input_dir.mkdir(parents=True, exist_ok=True)
-        selected = self.files[self.index] if self.files and self.index < len(self.files) else None
-        self.files = sorted(
-            (
-                entry
-                for entry in self.input_dir.iterdir()
-                if entry.is_file() and not entry.is_symlink()
-            ),
-            key=lambda path: path.name.casefold(),
-        )[:10000]
-        if selected in self.files:
-            self.index = self.files.index(selected)
-        elif self.files:
-            self.index = min(self.index, len(self.files) - 1)
-        else:
+    def refresh(self) -> str | None:
+        try:
+            self.input_dir.mkdir(parents=True, exist_ok=True)
+            selected = self.files[self.index] if self.files and self.index < len(self.files) else None
+            self.files = sorted(
+                (
+                    entry
+                    for entry in self.input_dir.iterdir()
+                    if entry.is_file() and not entry.is_symlink()
+                ),
+                key=lambda path: path.name.casefold(),
+            )[:10000]
+            if selected in self.files:
+                self.index = self.files.index(selected)
+            elif self.files:
+                self.index = min(self.index, len(self.files) - 1)
+            else:
+                self.index = 0
+            return None
+        except OSError as error:
+            self.files = []
             self.index = 0
+            return os_error_token("INPUT_DIRECTORY", error)
 
     def selected(self) -> Path | None:
         return self.files[self.index] if self.files else None
+
+    def cleanup_transient_results(self) -> str | None:
+        try:
+            for entry in self.output_dir.glob("scan-*.json"):
+                if entry.is_file() or entry.is_symlink():
+                    entry.unlink()
+            return None
+        except OSError as error:
+            return os_error_token("RESULT_CLEANUP", error)
 
     def busy(self) -> bool:
         return self.worker is not None and self.worker.is_alive()
@@ -99,17 +124,27 @@ class Bridge:
 
     def info(self, uart: serial.Serial) -> None:
         with self.lock:
-            self.refresh()
+            refresh_error = self.refresh()
             selected = self.selected()
             count = len(self.files)
             index = self.index
-            size = selected.stat().st_size if selected else 0
+            try:
+                size = selected.stat().st_size if selected else 0
+            except OSError as error:
+                refresh_error = os_error_token("INPUT_FILE", error)
+                size = 0
             name = token(selected.name, 63) if selected else "-"
+            if refresh_error:
+                self.state = "ERROR"
+                self.error = refresh_error
+            error_text = self.error if self.state == "ERROR" else "-"
         self.write(
             uart,
             f"BWF1 INFO {PROTOCOL_VERSION} {BRIDGE_VERSION} "
             f"{token(self.binwalk_version, 31)} {count} {index} {size} {name}",
         )
+        if error_text != "-":
+            self.write(uart, f"BWF1 ERROR {token(error_text, 63)}")
 
     def status(self, uart: serial.Serial) -> None:
         with self.lock:
@@ -122,12 +157,15 @@ class Bridge:
                 self.result_name,
                 self.description,
             )
+            error_text = self.error if self.state in ("ERROR", "RESULT_ERROR") else "-"
         self.write(
             uart,
             "BWF1 STATUS "
             f"{token(values[0], 15)} {values[1]} {values[2]} {values[3]} {values[4]} "
             f"{token(values[5], 31)} {token(values[6], 79)} END",
         )
+        if error_text != "-":
+            self.write(uart, f"BWF1 ERROR {token(error_text, 63)}")
 
     def clear_result(self) -> None:
         self.detections = 0
@@ -139,26 +177,31 @@ class Bridge:
 
     def scan_worker(self, target: Path, json_path: Path) -> None:
         try:
-            with self.lock:
-                if self.cancel_requested:
-                    self.state = "CANCELLED"
-                    return
-                self.process = subprocess.Popen(
-                    [
-                        self.binwalk or "binwalk",
-                        "--quiet",
-                        "--threads",
-                        "1",
-                        "--log",
-                        str(json_path),
-                        str(target),
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                process = self.process
-            return_code = process.wait()
+            with tempfile.TemporaryFile() as error_output:
+                with self.lock:
+                    if self.cancel_requested:
+                        self.state = "CANCELLED"
+                        return
+                    self.process = subprocess.Popen(
+                        [
+                            self.binwalk or "binwalk",
+                            "--quiet",
+                            "--threads",
+                            "1",
+                            "--log",
+                            str(json_path),
+                            str(target),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=error_output,
+                    )
+                    process = self.process
+                return_code = process.wait()
+                error_output.seek(0, 2)
+                error_size = error_output.tell()
+                error_output.seek(max(0, error_size - 256))
+                diagnostic = error_output.read().decode("utf-8", "replace").strip()
             with self.lock:
                 cancelled = self.cancel_requested
                 self.process = None
@@ -171,11 +214,19 @@ class Bridge:
                 with self.lock:
                     self.clear_result()
                     self.state = "ERROR"
+                    self.error = token(diagnostic or f"BINWALK_EXIT_{return_code}", 63)
                 return
-            if not json_path.is_file() or json_path.stat().st_size > MAX_JSON:
+            if not json_path.is_file():
                 with self.lock:
                     self.clear_result()
                     self.state = "RESULT_ERROR"
+                    self.error = "RESULT_MISSING"
+                return
+            if json_path.stat().st_size > MAX_JSON:
+                with self.lock:
+                    self.clear_result()
+                    self.state = "RESULT_ERROR"
+                    self.error = "RESULT_TOO_LARGE"
                 return
             with json_path.open("r", encoding="utf-8") as source:
                 payload = json.load(source)
@@ -202,18 +253,38 @@ class Bridge:
                     self.result_name = token(first.get("name", "unknown"), 31)
                     self.description = token(first.get("description", "-"), 79)
                 self.state = "DONE"
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                self.error = "-"
+        except OSError as error:
             with self.lock:
                 self.clear_result()
                 self.process = None
                 self.state = "ERROR"
+                self.error = os_error_token("SCAN", error)
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            with self.lock:
+                self.clear_result()
+                self.process = None
+                self.state = "RESULT_ERROR"
+                self.error = token(f"RESULT_{error}", 63)
+        finally:
+            try:
+                json_path.unlink(missing_ok=True)
+            except OSError as error:
+                with self.lock:
+                    self.state = "ERROR"
+                    self.error = os_error_token("RESULT_CLEANUP", error)
 
     def start_scan(self, uart: serial.Serial) -> None:
         with self.lock:
             if self.busy():
                 self.write(uart, "BWF1 ERROR ALREADY_RUNNING")
                 return
-            self.refresh()
+            refresh_error = self.refresh()
+            if refresh_error:
+                self.state = "ERROR"
+                self.error = refresh_error
+                self.write(uart, f"BWF1 ERROR {self.error}")
+                return
             target = self.selected()
             if target is None:
                 self.write(uart, "BWF1 ERROR NO_INPUT_FILES")
@@ -221,10 +292,23 @@ class Bridge:
             if not self.binwalk:
                 self.write(uart, "BWF1 ERROR BINWALK_NOT_INSTALLED")
                 return
-            self.output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                self.state = "ERROR"
+                self.error = os_error_token("OUTPUT_DIRECTORY", error)
+                self.write(uart, f"BWF1 ERROR {self.error}")
+                return
+            cleanup_error = self.cleanup_transient_results()
+            if cleanup_error:
+                self.state = "ERROR"
+                self.error = cleanup_error
+                self.write(uart, f"BWF1 ERROR {self.error}")
+                return
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             json_path = self.output_dir / f"scan-{stamp}.json"
             self.cancel_requested = False
+            self.error = "-"
             self.clear_result()
             self.state = "SCANNING"
             self.worker = threading.Thread(
@@ -254,7 +338,12 @@ class Bridge:
             if self.busy():
                 self.write(uart, "BWF1 ERROR BUSY")
                 return
-            self.refresh()
+            refresh_error = self.refresh()
+            if refresh_error:
+                self.state = "ERROR"
+                self.error = refresh_error
+                self.write(uart, f"BWF1 ERROR {self.error}")
+                return
             if self.files:
                 self.index = (self.index + delta) % len(self.files)
             self.clear_result()
@@ -282,10 +371,19 @@ class Bridge:
             self.write(uart, "BWF1 ERROR INVALID_COMMAND")
 
     def run(self) -> None:
-        self.input_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         try:
             with serial.Serial(self.port, self.baud, timeout=0.5, write_timeout=2) as uart:
+                try:
+                    self.input_dir.mkdir(parents=True, exist_ok=True)
+                    self.output_dir.mkdir(parents=True, exist_ok=True)
+                    cleanup_error = self.cleanup_transient_results()
+                    if cleanup_error:
+                        raise OSError(cleanup_error)
+                except OSError as error:
+                    with self.lock:
+                        self.state = "ERROR"
+                        self.error = os_error_token("DATA_DIRECTORY", error)
+                    self.write(uart, f"BWF1 ERROR {self.error}")
                 while True:
                     raw = uart.readline(MAX_LINE)
                     if not raw:

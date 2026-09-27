@@ -37,7 +37,7 @@ TX and RX are crossed. Binwalk FZ temporarily disables the Flipper expansion lis
 
 6. On the Flipper, select **Settings -> External baud -> 115200**, then open **External Binwalk**.
 
-Left/Right cycles through real regular files in the input directory. OK starts `binwalk --quiet --threads 1 --log ...` with a fixed argument vector. Completed JSON records remain under `/var/lib/binwalk-fz/output`. The Flipper displays the actual result count plus the first result's offset, size, confidence, name, and description.
+Left/Right cycles through real regular files in the input directory. OK starts `binwalk --quiet --threads 1 --log ...` with a fixed argument vector. The size-bounded JSON record is deleted after success, cancellation, or failure. Filesystem problems and the final bounded diagnostic from genuine Binwalk are returned to the Flipper. The Flipper displays the actual result count plus the first result's offset, size, confidence, name, and description.
 
 The bridge accepts only `HELLO`, `STATUS`, `NEXT`, `PREV`, `SCAN`, and `STOP`. It rejects oversized/non-ASCII lines and does not pass UART text to a shell.
 

@@ -21,8 +21,10 @@
 
 #define BW_DATA_DIR APP_DATA_PATH("")
 #define BW_REPORT_PATH APP_DATA_PATH("report.txt")
+#define BW_REPORT_PARTIAL APP_DATA_PATH("report.txt.partial")
+#define BW_REPORT_BACKUP APP_DATA_PATH("report.txt.backup")
 #define BW_HEX_BYTES 24U
-#define BW_APP_VERSION "1.0.1"
+#define BW_APP_VERSION "1.0.2"
 
 typedef enum {
     BwViewMain,
@@ -84,8 +86,8 @@ struct BwApp {
     FuriString* text;
     FuriThread* worker;
     volatile bool cancel;
-    volatile uint64_t progress_done;
-    volatile uint64_t progress_total;
+    volatile uint32_t progress_done;
+    volatile uint32_t progress_total;
     BwTask task;
     BwStatus status;
     BwViewId current_view;
@@ -156,8 +158,8 @@ static bool bw_worker_cancelled(void* context) {
 
 static void bw_worker_progress(void* context, uint64_t completed, uint64_t total) {
     BwApp* app = context;
-    app->progress_done = completed;
-    app->progress_total = total;
+    app->progress_total = total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+    app->progress_done = completed > UINT32_MAX ? UINT32_MAX : (uint32_t)completed;
 }
 
 static void bw_join_worker(BwApp* app) {
@@ -327,15 +329,32 @@ static void bw_hex_draw(Canvas* canvas, void* model_context) {
     }
 }
 
-static uint64_t bw_parse_hex(const char* text) {
-    uint64_t value=0; while(*text==' '||*text=='\t') text++; if(text[0]=='0'&&(text[1]=='x'||text[1]=='X')) text+=2;
-    while(*text) { uint8_t digit; if(*text>='0'&&*text<='9') digit=(uint8_t)(*text-'0'); else if(*text>='a'&&*text<='f') digit=(uint8_t)(*text-'a'+10); else if(*text>='A'&&*text<='F') digit=(uint8_t)(*text-'A'+10); else break; if(value>(UINT64_MAX-digit)/16) return UINT64_MAX; value=value*16+digit; text++; } return value;
+static bool bw_parse_hex(const char* text, uint64_t* output) {
+    uint64_t value=0;
+    bool found=false;
+    while(*text==' '||*text=='\t') text++;
+    if(text[0]=='0'&&(text[1]=='x'||text[1]=='X')) text+=2;
+    while(*text) {
+        uint8_t digit;
+        if(*text>='0'&&*text<='9') digit=(uint8_t)(*text-'0');
+        else if(*text>='a'&&*text<='f') digit=(uint8_t)(*text-'a'+10);
+        else if(*text>='A'&&*text<='F') digit=(uint8_t)(*text-'A'+10);
+        else break;
+        if(value>(UINT64_MAX-digit)/16) return false;
+        value=value*16+digit;
+        found=true;
+        text++;
+    }
+    while(*text==' '||*text=='\t') text++;
+    if(!found||*text) return false;
+    *output=value;
+    return true;
 }
 
 static void bw_input_done(void* context) {
     BwApp* app=context;
     if(app->input_purpose==BwInputSearch) bw_start_task(app,BwTaskSearch);
-    else { app->hex_offset=bw_parse_hex(app->goto_buffer); bw_read_hex(app); BwHexModel* model=view_get_model(app->hex_view); model->revision++; view_commit_model(app->hex_view,true); bw_switch(app,BwViewHex); }
+    else { uint64_t offset=0; if(!bw_parse_hex(app->goto_buffer,&offset)) { bw_set_text(app,"Invalid offset","Enter hexadecimal digits only, optionally prefixed with 0x.",BwViewHex); return; } app->hex_offset=offset; if(!bw_read_hex(app)) { bw_set_text(app,"HEX Viewer","Unable to read that offset.",BwViewHex); return; } BwHexModel* model=view_get_model(app->hex_view); model->revision++; view_commit_model(app->hex_view,true); bw_switch(app,BwViewHex); }
 }
 
 static void bw_open_input(BwApp* app, BwInputPurpose purpose) {
@@ -348,9 +367,9 @@ static void bw_open_input(BwApp* app, BwInputPurpose purpose) {
 static bool bw_hex_input(InputEvent* event, void* context) {
     BwApp* app=context; if(event->type!=InputTypeShort&&event->type!=InputTypeRepeat) return false;
     if(event->key==InputKeyUp) app->hex_offset=app->hex_offset>=BW_HEX_BYTES?app->hex_offset-BW_HEX_BYTES:0;
-    else if(event->key==InputKeyDown) app->hex_offset+=BW_HEX_BYTES;
+    else if(event->key==InputKeyDown) app->hex_offset=app->hex_offset>UINT64_MAX-BW_HEX_BYTES?UINT64_MAX:app->hex_offset+BW_HEX_BYTES;
     else if(event->key==InputKeyLeft) app->hex_offset=app->hex_offset>=4?app->hex_offset-4:0;
-    else if(event->key==InputKeyRight) app->hex_offset+=4;
+    else if(event->key==InputKeyRight) app->hex_offset=app->hex_offset>UINT64_MAX-4U?UINT64_MAX:app->hex_offset+4U;
     else if(event->key==InputKeyOk) { bw_open_input(app,BwInputGoto); return true; }
     else return false;
     bw_read_hex(app); BwHexModel* model=view_get_model(app->hex_view); model->revision++; view_commit_model(app->hex_view,true); return true;
@@ -379,13 +398,32 @@ static bool bw_write_all(File* file, const char* text) {
 }
 
 static void bw_write_report(BwApp* app) {
-    storage_common_mkdir(app->storage,BW_DATA_DIR); File* file=storage_file_alloc(app->storage); bool ok=file&&storage_file_open(file,BW_REPORT_PATH,FSAM_WRITE,FSOM_CREATE_ALWAYS);
-    char line[320];
-    if(ok) { snprintf(line,sizeof(line),"Binwalk FZ report\nGenerated: %lu\nInput: %s\nValidated detections total/retained: %lu/%lu%s\nSignature set: %lu\nExtraction: unavailable\n",(unsigned long)furi_hal_rtc_get_timestamp(),bw_has_file(app)?furi_string_get_cstr(app->path):"none",(unsigned long)app->scan.total_valid,(unsigned long)app->scan.count,app->scan.truncated?" (bounded)":"",(unsigned long)bw_signature_count()); ok=bw_write_all(file,line); }
-    for(uint32_t i=0;ok&&i<app->scan.count;i++) { const BwDetection* d=&app->scan.detections[i]; snprintf(line,sizeof(line),"0x%llX %s %s\n",(unsigned long long)d->offset,bw_type_name(d->type),d->metadata); ok=bw_write_all(file,line); }
-    if(ok&&app->entropy.bytes_scanned) { snprintf(line,sizeof(line),"Entropy whole: %.6f; block size: %lu; blocks: %lu; min/max: %.6f/%.6f\n",app->entropy.whole,(unsigned long)app->entropy.block_size,(unsigned long)app->entropy.block_count,app->entropy.block_min,app->entropy.block_max); ok=bw_write_all(file,line); }
-    if(ok) { snprintf(line,sizeof(line),"Strings found/retained: %lu/%lu\nSearch query: %s\nSearch matches: %lu\n",(unsigned long)app->strings.total,(unsigned long)app->strings.count,app->search_query,(unsigned long)app->search.total); ok=bw_write_all(file,line); }
+    bool ok=storage_simply_mkdir(app->storage,BW_DATA_DIR);
+    if(ok&&storage_file_exists(app->storage,BW_REPORT_BACKUP)) {
+        if(!storage_file_exists(app->storage,BW_REPORT_PATH)) ok=storage_common_rename(app->storage,BW_REPORT_BACKUP,BW_REPORT_PATH)==FSE_OK;
+        else ok=storage_common_remove(app->storage,BW_REPORT_BACKUP)==FSE_OK;
+    }
+    if(ok&&storage_file_exists(app->storage,BW_REPORT_PARTIAL)) ok=storage_common_remove(app->storage,BW_REPORT_PARTIAL)==FSE_OK;
+    File* file=ok?storage_file_alloc(app->storage):NULL;
+    ok=file&&storage_file_open(file,BW_REPORT_PARTIAL,FSAM_WRITE,FSOM_CREATE_ALWAYS);
+    if(ok) {
+        furi_string_printf(app->text,"Binwalk FZ report\nGenerated: %lu\nInput: %s\nValidated detections total/retained: %lu/%lu%s\nSignature set: %lu\nExtraction: unavailable\n",(unsigned long)furi_hal_rtc_get_timestamp(),bw_has_file(app)?furi_string_get_cstr(app->path):"none",(unsigned long)app->scan.total_valid,(unsigned long)app->scan.count,app->scan.truncated?" (bounded)":"",(unsigned long)bw_signature_count());
+        ok=bw_write_all(file,furi_string_get_cstr(app->text));
+    }
+    for(uint32_t i=0;ok&&i<app->scan.count;i++) { const BwDetection* d=&app->scan.detections[i]; furi_string_printf(app->text,"0x%llX %s %s\n",(unsigned long long)d->offset,bw_type_name(d->type),d->metadata); ok=bw_write_all(file,furi_string_get_cstr(app->text)); }
+    if(ok&&app->entropy.bytes_scanned) { furi_string_printf(app->text,"Entropy whole: %.6f; block size: %lu; blocks: %lu; min/max: %.6f/%.6f\n",app->entropy.whole,(unsigned long)app->entropy.block_size,(unsigned long)app->entropy.block_count,app->entropy.block_min,app->entropy.block_max); ok=bw_write_all(file,furi_string_get_cstr(app->text)); }
+    if(ok) { furi_string_printf(app->text,"Strings found/retained: %lu/%lu\nSearch query: %s\nSearch matches: %lu\n",(unsigned long)app->strings.total,(unsigned long)app->strings.count,app->search_query,(unsigned long)app->search.total); ok=bw_write_all(file,furi_string_get_cstr(app->text)); }
+    if(ok) ok=storage_file_sync(file);
     if(file) { if(storage_file_is_open(file)) storage_file_close(file); storage_file_free(file); }
+    if(ok) {
+        bool had_report=storage_file_exists(app->storage,BW_REPORT_PATH);
+        if(had_report&&storage_common_rename(app->storage,BW_REPORT_PATH,BW_REPORT_BACKUP)!=FSE_OK) ok=false;
+        else if(storage_common_rename(app->storage,BW_REPORT_PARTIAL,BW_REPORT_PATH)!=FSE_OK) {
+            if(had_report) storage_common_rename(app->storage,BW_REPORT_BACKUP,BW_REPORT_PATH);
+            ok=false;
+        } else if(had_report) storage_common_remove(app->storage,BW_REPORT_BACKUP);
+    }
+    if(!ok) storage_common_remove(app->storage,BW_REPORT_PARTIAL);
     bw_set_text(app,ok?"Report saved":"Report failed",ok?BW_REPORT_PATH "\nContains measured parser results only.":"Check SD card and free space.",BwViewMain);
 }
 

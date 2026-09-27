@@ -15,7 +15,7 @@
 | Whole-file entropy | Implemented | Shannon entropy in bits per byte |
 | Block entropy | Implemented | Configurable 256/512/1024/2048-byte blocks; first 64 retained plus exact summary |
 | Progress/cancellation | Implemented | Worker thread; Back requests cancellation and closes the file |
-| Reports | Implemented | Bounded text report in app data containing only completed measurements |
+| Reports | Implemented | Transactional, synchronized app-data report containing only completed measurements |
 | Extraction/decompression | Unavailable | No extraction claim, output path, or execution path exists |
 | Recursive scanning | Unavailable | Would depend on extraction |
 | Full upstream 111-signature set | Native: partial; external: upstream | 18 validated native types; external Pi invokes the recorded genuine upstream implementation |

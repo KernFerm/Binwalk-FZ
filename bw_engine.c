@@ -92,6 +92,121 @@ static bool read_exact(const BwReader* reader, uint64_t offset, uint8_t* data, s
            actual == length;
 }
 
+static bool find_sequence(
+    const BwReader* reader,
+    uint64_t offset,
+    const uint8_t* sequence,
+    size_t sequence_length,
+    uint64_t* end_offset,
+    BwCancelled cancelled,
+    void* callback_context) {
+    uint8_t buffer[BW_IO_CHUNK];
+    size_t matched = 0U;
+    while(offset < reader->size) {
+        if(cancelled && cancelled(callback_context)) return false;
+        size_t length = reader->size - offset > sizeof(buffer) ? sizeof(buffer) : (size_t)(reader->size - offset);
+        if(!read_exact(reader, offset, buffer, length)) return false;
+        for(size_t index = 0; index < length; index++) {
+            if(buffer[index] == sequence[matched]) {
+                matched++;
+                if(matched == sequence_length) {
+                    *end_offset = offset + index + 1U;
+                    return true;
+                }
+            } else {
+                matched = buffer[index] == sequence[0] ? 1U : 0U;
+            }
+        }
+        offset += length;
+    }
+    return false;
+}
+
+static bool skip_gif_subblocks(const BwReader* reader, uint64_t* cursor) {
+    uint8_t length = 0U;
+    do {
+        if(!read_exact(reader, *cursor, &length, 1U)) return false;
+        (*cursor)++;
+        if(!range_ok(reader, *cursor, length)) return false;
+        *cursor += length;
+    } while(length);
+    return true;
+}
+
+static bool validate_gif_stream(
+    const BwReader* reader,
+    uint64_t offset,
+    uint8_t packed,
+    uint64_t* size,
+    BwCancelled cancelled,
+    void* callback_context) {
+    uint64_t cursor = offset + 13U;
+    if(packed & 0x80U) {
+        uint64_t table_size = 3ULL << ((packed & 0x07U) + 1U);
+        if(!range_ok(reader, cursor, table_size)) return false;
+        cursor += table_size;
+    }
+    while(cursor < reader->size) {
+        if(cancelled && cancelled(callback_context)) return false;
+        uint8_t introducer = 0U;
+        if(!read_exact(reader, cursor, &introducer, 1U)) return false;
+        if(introducer == 0x3BU) {
+            *size = cursor + 1U - offset;
+            return true;
+        }
+        if(introducer == 0x21U) {
+            if(!range_ok(reader, cursor, 2U)) return false;
+            cursor += 2U;
+            if(!skip_gif_subblocks(reader, &cursor)) return false;
+        } else if(introducer == 0x2CU) {
+            uint8_t descriptor[10];
+            if(!read_exact(reader, cursor, descriptor, sizeof(descriptor)) ||
+               !le16(descriptor + 5) || !le16(descriptor + 7)) return false;
+            cursor += sizeof(descriptor);
+            if(descriptor[9] & 0x80U) {
+                uint64_t table_size = 3ULL << ((descriptor[9] & 0x07U) + 1U);
+                if(!range_ok(reader, cursor, table_size)) return false;
+                cursor += table_size;
+            }
+            uint8_t code_size = 0U;
+            if(!read_exact(reader, cursor, &code_size, 1U) || code_size < 2U || code_size > 8U)
+                return false;
+            cursor++;
+            if(!skip_gif_subblocks(reader, &cursor)) return false;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool validate_gzip_header(const BwReader* reader, uint64_t offset, uint8_t flags) {
+    uint64_t cursor = offset + 10U;
+    uint8_t bytes[2];
+    if(flags & 0x04U) {
+        if(!read_exact(reader, cursor, bytes, 2U)) return false;
+        cursor += 2U;
+        uint16_t extra_length = le16(bytes);
+        if(!range_ok(reader, cursor, extra_length)) return false;
+        cursor += extra_length;
+    }
+    for(uint8_t mask = 0x08U; mask <= 0x10U; mask <<= 1U) {
+        if(!(flags & mask)) continue;
+        bool terminated = false;
+        for(size_t length = 0U; length < 4096U; length++) {
+            uint8_t byte = 0U;
+            if(!read_exact(reader, cursor++, &byte, 1U)) return false;
+            if(!byte) { terminated = true; break; }
+        }
+        if(!terminated) return false;
+    }
+    if(flags & 0x02U) {
+        if(!range_ok(reader, cursor, 2U)) return false;
+        cursor += 2U;
+    }
+    return range_ok(reader, cursor, 10U);
+}
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t* data, size_t length) {
     crc = ~crc;
     for(size_t i = 0; i < length; i++) {
@@ -175,7 +290,8 @@ static bool validate_detection(
         return true;
     }
     case BwTypeGzip: {
-        if(!read_exact(reader, offset, h, 10) || h[2] != 8 || (h[3] & 0xE0U)) return false;
+        if(!read_exact(reader, offset, h, 10) || h[2] != 8 || (h[3] & 0xE0U) ||
+           !validate_gzip_header(reader, offset, h[3])) return false;
         snprintf(out->metadata, sizeof(out->metadata), "deflate, flags 0x%02X, mtime %lu, OS %u", h[3], (unsigned long)le32(h + 4), h[9]);
         return true;
     }
@@ -201,17 +317,38 @@ static bool validate_detection(
         return true;
     }
     case BwTypeRar: {
+        static const uint8_t rar4_end[] = {0xC4, 0x3D, 0x7B, 0x00, 0x40, 0x07, 0x00};
+        static const uint8_t rar5_end[] = {0x1D, 0x77, 0x56, 0x51, 0x03, 0x05, 0x04, 0x00};
+        const uint8_t* end_marker = NULL;
+        size_t end_length = 0U;
         if(magic_length == sizeof(magic_rar4)) {
             if(!read_exact(reader, offset, h, 14) || h[9] != 0x73 || le16(h + 12) < 7 ||
                !range_ok(reader, offset, 7ULL + le16(h + 12)))
                 return false;
-            snprintf(out->metadata, sizeof(out->metadata), "RAR version 4 archive");
+            end_marker = rar4_end;
+            end_length = sizeof(rar4_end);
         } else if(magic_length == sizeof(magic_rar5)) {
-            if(!read_exact(reader, offset, h, sizeof(magic_rar5))) return false;
-            snprintf(out->metadata, sizeof(out->metadata), "RAR version 5 archive");
+            end_marker = rar5_end;
+            end_length = sizeof(rar5_end);
         } else {
             return false;
         }
+        uint64_t end_offset = 0U;
+        if(!find_sequence(
+               reader,
+               offset + magic_length,
+               end_marker,
+               end_length,
+               &end_offset,
+               cancelled,
+               callback_context)) return false;
+        out->size = end_offset - offset;
+        snprintf(
+            out->metadata,
+            sizeof(out->metadata),
+            "RAR version %u archive, EOF verified, size %llu",
+            magic_length == sizeof(magic_rar4) ? 4U : 5U,
+            (unsigned long long)out->size);
         return true;
     }
     case BwTypePng: {
@@ -240,7 +377,13 @@ static bool validate_detection(
     case BwTypeGif: {
         if(!read_exact(reader, offset, h, 13)) return false;
         uint16_t width = le16(h + 6), height = le16(h + 8);
-        if(!width || !height) return false;
+        if(!width || !height || !validate_gif_stream(
+                                  reader,
+                                  offset,
+                                  h[10],
+                                  &out->size,
+                                  cancelled,
+                                  callback_context)) return false;
         snprintf(out->metadata, sizeof(out->metadata), "%c%c%c%c%c%c, %ux%u", h[0], h[1], h[2], h[3], h[4], h[5], width, height);
         return true;
     }
@@ -293,9 +436,51 @@ static bool validate_detection(
         return true;
     }
     case BwTypeZstd: {
-        if(!read_exact(reader, offset, h, 6) || (h[4] & 0x08U)) return false;
-        snprintf(out->metadata, sizeof(out->metadata), "frame descriptor 0x%02X", h[4]);
-        return true;
+        if(!read_exact(reader, offset, h, 5) || (h[4] & 0x18U)) return false;
+        uint8_t descriptor = h[4];
+        bool checksum = (descriptor & 0x04U) != 0U;
+        bool single_segment = (descriptor & 0x20U) != 0U;
+        uint8_t dictionary_flag = descriptor & 0x03U;
+        uint8_t content_flag = descriptor >> 6U;
+        uint64_t cursor = offset + 5U;
+        uint64_t optional_size = single_segment ? 0U : 1U;
+        optional_size += dictionary_flag == 0U ? 0U : dictionary_flag == 1U ? 1U : dictionary_flag == 2U ? 2U : 4U;
+        optional_size += content_flag == 0U ? (single_segment ? 1U : 0U) : content_flag == 1U ? 2U : content_flag == 2U ? 4U : 8U;
+        if(!range_ok(reader, cursor, optional_size)) return false;
+        cursor += optional_size;
+        uint32_t blocks = 0U;
+        while(cursor < reader->size) {
+            if(cancelled && cancelled(callback_context)) return false;
+            uint8_t block[3];
+            if(!read_exact(reader, cursor, block, sizeof(block))) return false;
+            uint32_t header = (uint32_t)block[0] | ((uint32_t)block[1] << 8U) |
+                              ((uint32_t)block[2] << 16U);
+            bool last = (header & 1U) != 0U;
+            uint8_t block_type = (uint8_t)((header >> 1U) & 3U);
+            uint32_t block_size = header >> 3U;
+            if(block_type == 3U) return false;
+            uint64_t stored_size = block_type == 1U ? 1U : block_size;
+            cursor += sizeof(block);
+            if(!range_ok(reader, cursor, stored_size)) return false;
+            cursor += stored_size;
+            blocks++;
+            if(last) {
+                if(checksum) {
+                    if(!range_ok(reader, cursor, 4U)) return false;
+                    cursor += 4U;
+                }
+                out->size = cursor - offset;
+                snprintf(
+                    out->metadata,
+                    sizeof(out->metadata),
+                    "frame descriptor 0x%02X, %lu blocks, size %llu",
+                    descriptor,
+                    (unsigned long)blocks,
+                    (unsigned long long)out->size);
+                return true;
+            }
+        }
+        return false;
     }
     case BwTypeFlac: {
         if(!read_exact(reader, offset, h, 8) || (h[4] & 0x7FU) != 0 || be32(h + 4) % 0x1000000U != 34 || !range_ok(reader, offset, 42)) return false;

@@ -180,9 +180,9 @@ bool bw_external_start(BwExternal* external, uint32_t baudrate) {
         bw_external_stop(external);
         return false;
     }
+    furi_hal_serial_init(external->serial, baudrate);
     furi_thread_start(external->worker);
     external->worker_started = true;
-    furi_hal_serial_init(external->serial, baudrate);
     furi_hal_serial_async_rx_start(external->serial, bw_external_irq, external, true);
     bw_external_send(external, "BWF1 HELLO\n");
     bw_external_send(external, "BWF1 STATUS\n");

@@ -1,8 +1,8 @@
 # Binwalk FZ
 
-Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports only structurally validated signatures at their real byte offsets. Version 1.0.1 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
+Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports bounded, format-validated signatures at their real byte offsets. Version 1.0.2 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
 
-Current release: **v1.0.1**.
+Current release: **v1.0.2**.
 
 ## Install the FAP
 
@@ -46,7 +46,7 @@ Files are streamed in bounded chunks instead of being loaded completely into Fli
 
 ### Reports and settings
 
-- **Reports** writes completed measured/parser results to `/ext/apps_data/binwalk_fz/report.txt`.
+- **Reports** transactionally writes completed measured/parser results to `/ext/apps_data/binwalk_fz/report.txt`. A failed write or sync preserves the previous valid report.
 - **Settings** selects a string minimum of 4/6/8/12 bytes and an entropy block size of 256/512/1024/2048 bytes.
 - **Version** displays the installed application version.
 - Select **About** and press OK for an on-device description of native and Raspberry Pi operation. Use Up/Down to scroll.
@@ -63,7 +63,7 @@ This mode runs the genuine upstream `binwalk` executable on a Raspberry Pi or Li
 4. In the Flipper's **Settings**, select the UART baud used by the companion.
 5. Open **External Binwalk**. The screen reports the genuine Binwalk version and real files offered by the Pi.
 6. Use Left/Right to select a file and OK to start or cancel its scan.
-7. The Pi runs Binwalk and the Flipper displays the genuine detection count and first-result details returned from Binwalk's JSON output.
+7. The Pi runs Binwalk and the Flipper displays the genuine detection count and first-result details returned from Binwalk's JSON output. The bounded intermediate JSON file is deleted after success, cancellation, or failure.
 8. Press **Back** to stop the external session, close UART, and restore the Flipper expansion service.
 
 Files remain on the Pi. Full extraction, recursion, filters, carving, and other upstream command-line features remain available directly on the Pi. The fixed BWF1 protocol does not expose arbitrary shell commands.
