@@ -34,8 +34,8 @@ ufbt
 
 The current source compiles and links against official firmware SDK 1.4.3, passes APPCHK for target f7/API 87.1, and produces `dist/binwalk_fz.fap`.
 
-The clean v1.0.2 artifact is 48,432 bytes with SHA-256
-`16E13350901722C4DB9335FBCB6F7DC94302CE627D2A3714838B25A9ABC38904`.
+The clean v1.0.4 artifact is 48,432 bytes with SHA-256
+`080249425DE218CE51B87BD29EF3BFCBEABCC47B425100C8A56BD33597432A56`.
 
 ## Device acceptance
 

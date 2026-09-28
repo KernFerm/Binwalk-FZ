@@ -24,7 +24,7 @@
 #define BW_REPORT_PARTIAL APP_DATA_PATH("report.txt.partial")
 #define BW_REPORT_BACKUP APP_DATA_PATH("report.txt.backup")
 #define BW_HEX_BYTES 24U
-#define BW_APP_VERSION "1.0.2"
+#define BW_APP_VERSION "1.0.4"
 
 typedef enum {
     BwViewMain,

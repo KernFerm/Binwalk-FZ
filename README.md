@@ -1,8 +1,8 @@
 # Binwalk FZ
 
-Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports bounded, format-validated signatures at their real byte offsets. Version 1.0.2 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
+Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports bounded, format-validated signatures at their real byte offsets. Version 1.0.4 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
 
-Current release: **v1.0.2**.
+Current release: **v1.0.4**.
 
 ## Install the FAP
 
