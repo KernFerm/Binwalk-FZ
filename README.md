@@ -1,12 +1,12 @@
 # Binwalk FZ
 
-Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports bounded, format-validated signatures at their real byte offsets. Version 1.0.4 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
+Binwalk FZ analyzes firmware and other binary files from a Flipper Zero. Its native read-only engine scans files on the microSD card and reports bounded, format-validated signatures at their real byte offsets. Version 1.0.5 also includes an external Linux/Raspberry Pi mode: genuine upstream Binwalk runs on the companion computer, while the Flipper acts as its UART controller and results display.
 
-Current release: **v1.0.4**.
+Current release: **v1.0.5**.
 
 ## Install the FAP
 
-You need a Flipper Zero with a working microSD card. The supplied release build targets official firmware 1.4.3, target f7, API 87.1. A firmware build with an incompatible API may require the app to be rebuilt.
+You need a Flipper Zero with a working microSD card. The supplied release build targets official firmware 1.5.1, target f7, API 88.2. A firmware build with an incompatible API may require the app to be rebuilt.
 
 ### Install with qFlipper
 
@@ -72,13 +72,13 @@ Files remain on the Pi. Full extraction, recursion, filters, carving, and other 
 
 The native Flipper engine does not extract, decompress, execute, mount, or recursively process detected content. It implements 18 bounded validated types rather than the entire upstream Binwalk signature catalog. External mode provides the genuine upstream catalog on the Pi, but advanced extraction and CLI features are operated directly on the Pi.
 
-`.nfc`, `.rfid`, `.sub`, UART captures, and firmware files are treated as arbitrary bytes unless their contents pass a real validator. No result is invented from a filename or extension. Retained detections, strings, search hits, and entropy blocks are bounded to 64 entries, with totals and truncation shown. Device files above 4 GiB are rejected because firmware 1.4.3 exposes a 32-bit seek API.
+`.nfc`, `.rfid`, `.sub`, UART captures, and firmware files are treated as arbitrary bytes unless their contents pass a real validator. No result is invented from a filename or extension. Retained detections, strings, search hits, and entropy blocks are bounded to 64 entries, with totals and truncation shown. Device files above 4 GiB are rejected because firmware 1.5.1 exposes a 32-bit seek API.
 
 Only inspect firmware and files that you own or are authorized to analyze. See [FEATURE_MATRIX.md](FEATURE_MATRIX.md), [SECURITY.md](SECURITY.md), and [TESTING.md](TESTING.md) for exact support, resource limits, and validation evidence.
 
 ## Build from source
 
-Requirements: Python 3, `ufbt` 0.2.6 or newer, and official firmware/SDK 1.4.3 (API 87.1) or a compatible SDK.
+Requirements: Python 3, `ufbt` 0.2.6 or newer, and official firmware/SDK 1.5.1 (API 88.2) or a compatible SDK.
 
 ```powershell
 python -m pip install --upgrade ufbt

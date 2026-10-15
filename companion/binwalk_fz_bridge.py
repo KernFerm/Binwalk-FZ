@@ -16,7 +16,7 @@ from pathlib import Path
 
 import serial
 
-BRIDGE_VERSION = "1.0.4"
+BRIDGE_VERSION = "1.0.5"
 PROTOCOL_VERSION = 1
 MAX_LINE = 256
 MAX_JSON = 32 * 1024 * 1024

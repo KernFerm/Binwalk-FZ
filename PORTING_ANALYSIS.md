@@ -8,7 +8,7 @@ The Cargo graph includes Aho-Corasick, serde/JSON, clap, chrono, threadpool, Plo
 
 ## Flipper architecture
 
-The Flipper port is a native C external application using only public firmware 1.4.3 APIs. It does not load the selected file into RAM. A `BwReader` abstraction exposes a bounded read-at operation and a known file size. The scanner reads 512-byte chunks and retains 15 bytes of overlap, one less than the longest registered magic pattern. Validators perform bounded absolute reads and checked arithmetic. Large 7-Zip next-header CRC validation is itself streamed in 512-byte pieces and observes cancellation.
+The Flipper port is a native C external application using only public firmware 1.5.1 APIs. It does not load the selected file into RAM. A `BwReader` abstraction exposes a bounded read-at operation and a known file size. The scanner reads 512-byte chunks and retains 15 bytes of overlap, one less than the longest registered magic pattern. Validators perform bounded absolute reads and checked arithmetic. Large 7-Zip next-header CRC validation is itself streamed in 512-byte pieces and observes cancellation.
 
 The port uses a compact linear signature table rather than Aho-Corasick. With 22 registered patterns and 18 types, this costs more comparisons per byte but avoids the heap and generated automaton required by the desktop engine. Only a validated candidate becomes a result. Results are bounded to 64 retained detections while the total count and truncation state remain explicit.
 

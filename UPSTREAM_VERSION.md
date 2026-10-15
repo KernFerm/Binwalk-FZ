@@ -9,7 +9,7 @@
 | Package version | `3.1.1` |
 | Language/edition | Rust 2024 |
 | Upstream license | MIT |
-| Firmware baseline | Official Flipper firmware 1.4.3 |
-| SDK baseline | uFBT release SDK 1.4.3, target f7, API 87.1 |
+| Firmware baseline | Official Flipper firmware 1.5.1 |
+| SDK baseline | uFBT release SDK 1.5.1, target f7, API 88.2 |
 
 The checkout was cloned with `gh repo clone ReFirmLabs/binwalk upstream-binwalk` and inspected outside the application source directory. It is an analysis input, not an FAP build input.
